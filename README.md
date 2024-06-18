@@ -1,6 +1,9 @@
 # `ms-offcrypto-writer`
 This crate allows encrypting ECMA376/OOXML (so newer MS-Office files such as XLSX) using the agile encryption method as described in [MS-OFFCRYPTO](https://msopenspecs.azureedge.net/files/MS-OFFCRYPTO/[MS-OFFCRYPTO].pdf).
 
+## How to use
+Use the `Ecma376AgileWriter` wrapper around a `File` or `Cursor` (or whatever writer you're using) for other crates such as [`simple-xlsx-writer`](https://crates.io/crates/simple-xlsx-writer).
+
 ## If you find security flaws
 If you find any security flaws beyond the lack of zeroing out data structures, please send me an email at 42triangles@tutanota.com. I will *try* to answer within two days.
 
