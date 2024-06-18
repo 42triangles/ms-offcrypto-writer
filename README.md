@@ -29,11 +29,12 @@ It includes both binary data in the beginning, uses CRLF and should NOT include 
 
 ## Roadmap
 * A more complete implementation (though that will be a second crate, this crate will continue to receive updates)
+* Make the XML templating saner. Mostly such that the file is fully UTF8 & trailing newlines (such as the ones added by vim) aren't an issue.
+* Add examples & tests
 * *Maybe* byte equivalent files including the CFB container file (though that will require a reimplementation for CFBs).
 * *Maybe* on-the-fly encryption that never actually commits unencrypted data to the underlying writer. While I'm very interested in this, there's some design decisions to hash out & benchmarks to be done.
 * *Maybe* optimising it for speed. It should be plenty fast, and either the `cfb` crate or the `write!` usage directly into the stream is a likely culprit if things aren't, but nothing has been verified or even tested regarding performance.
 * *Maybe* implement zeroing of data structures.
-* Make the XML templating saner. Mostly such that the file is fully UTF8 & trailing newlines (such as the ones added by vim) aren't an issue.
 
 The following things are NOT the goal of this crate, and will only be found in the more complete crate:
 * Any Information Rights Management features
