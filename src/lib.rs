@@ -422,23 +422,18 @@ impl<F: Read + Write + Seek> Ecma376AgileWriter<F> {
         let mut block_key = 0u32;
         let mut buffer = Box::new([0; 4096]);
         loop {
-            let length_read;
-            let mut idx = 0;
+            let mut length_read = 0;
             loop {
-                let remaining = &mut buffer[idx..];
+                let remaining = &mut buffer[length_read..];
+
                 let read = self.encrypted_package.read(remaining)?;
+                length_read += read;
+
                 if read == 0 {
                     remaining.fill(0);
-
-                    let remaining_len = remaining.len();
-                    length_read = buffer.len() - remaining_len;
-
                     break;
                 } else if read == remaining.len() {
-                    length_read = buffer.len();
                     break;
-                } else {
-                    idx += read;
                 }
             }
 
