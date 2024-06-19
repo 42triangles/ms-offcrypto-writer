@@ -20,7 +20,7 @@ use widestring::{utf16str, Utf16Str};
 type HmacSha512 = hmac::Hmac<Sha512>;
 
 const SPIN_COUNT: u32 = 100_000;
-const ENCRYPTED_PACKAGE_HEADER_SIZE: u64 = size_of::<u64>() as u64;
+const ENCRYPTED_PACKAGE_HEADER_SIZE: u64 = mem::size_of::<u64>() as u64;
 
 fn write_unicode_lp_p4(buffer: &mut Vec<u8>, data: &Utf16Str) {
     let length = data.len() * 2;
@@ -447,7 +447,7 @@ impl<F: Read + Write + Seek> Ecma376AgileWriter<F> {
             );
 
             self.encrypted_package
-                .seek_relative(-i64::try_from(length_read).unwrap())?;
+                .seek(SeekFrom::Current(-i64::try_from(length_read).unwrap()))?;
 
             self.encrypted_package.write_all(&buffer[..encrypted_len])?;
             hmac.update(&buffer[..encrypted_len]);
