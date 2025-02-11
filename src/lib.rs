@@ -4,6 +4,7 @@
 //! See [`Ecma376AgileWriter`].
 
 use std::{
+    fmt,
     io::{self, prelude::*, SeekFrom},
     mem,
     ops::RangeBounds,
@@ -20,7 +21,7 @@ use widestring::{utf16str, Utf16Str};
 type HmacSha512 = hmac::Hmac<Sha512>;
 
 const SPIN_COUNT: u32 = 100_000;
-const ENCRYPTED_PACKAGE_HEADER_SIZE: u64 = mem::size_of::<u64>() as u64;
+const ENCRYPTED_PACKAGE_HEADER_SIZE: u64 = size_of::<u64>() as u64;
 
 fn write_unicode_lp_p4(buffer: &mut Vec<u8>, data: &Utf16Str) {
     let length = data.len() * 2;
@@ -147,7 +148,10 @@ fn transform_info(buffer: &mut Vec<u8>) -> &[u8] {
     buffer
 }
 
-#[allow(single_use_lifetimes)]
+#[allow(
+    single_use_lifetimes,
+    reason = "See the `anonymous_lifetime_in_impl_trait` feature"
+)]
 fn sha512<'a>(x: impl IntoIterator<Item = &'a [u8]>) -> [u8; 64] {
     let mut sha = Sha512::new();
     x.into_iter().for_each(|i| sha.update(i));
@@ -259,7 +263,7 @@ impl<F: Read + Write + Seek> Ecma376AgileWriter<F> {
         password: impl Password,
         file: F,
     ) -> io::Result<Self> {
-        #[allow(clippy::absolute_paths)]
+        #[allow(clippy::absolute_paths, reason = "this is more readable")]
         let mut cfb = CompoundFile::create_with_version(cfb::Version::V3, file)?;
         cfb.create_storage("\x06DataSpaces")?;
 
@@ -515,8 +519,7 @@ impl<F: Read + Write + Seek> Write for Ecma376AgileWriter<F> {
         self.encrypted_package.write_all(buf)
     }
 
-    #[allow(clippy::absolute_paths)]
-    fn write_fmt(&mut self, fmt: std::fmt::Arguments<'_>) -> io::Result<()> {
+    fn write_fmt(&mut self, fmt: fmt::Arguments<'_>) -> io::Result<()> {
         self.encrypted_package.write_fmt(fmt)
     }
 }
