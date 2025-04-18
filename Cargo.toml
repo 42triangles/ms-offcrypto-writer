@@ -20,6 +20,11 @@ rand = "0.9"
 hmac = "0.12"
 base64 = "0.22"
 
+[dev-dependencies]
+simple-xlsx-writer = "0.1"
+office-crypto = "0.1"
+calamine = "0.24"
+
 [lints]
 rust.explicit_outlives_requirements = "warn"
 rust.macro_use_extern_crate = "warn"
