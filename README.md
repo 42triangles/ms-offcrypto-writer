@@ -1,4 +1,4 @@
-# `ms-offcrypto-writer`
+# [`ms-offcrypto-writer`](https://crates.io/crates/ms-offcrypto-writer)
 This crate allows encrypting ECMA376/OOXML (so newer MS-Office files such as XLSX) using the agile encryption method as described in [MS-OFFCRYPTO](https://msopenspecs.azureedge.net/files/MS-OFFCRYPTO/[MS-OFFCRYPTO].pdf).
 
 ## How to use
