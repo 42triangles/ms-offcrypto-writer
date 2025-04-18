@@ -16,8 +16,7 @@
 use std::{
     fmt,
     io::{self, prelude::*, SeekFrom},
-    mem,
-    ops::RangeBounds,
+    mem, ops,
 };
 
 use aes::Aes256;
@@ -37,14 +36,195 @@ const SPIN_COUNT: u32 = 100_000;
 /// 2.3.4.4).
 const ENCRYPTED_PACKAGE_HEADER_SIZE: u64 = size_of::<u64>() as u64;
 
+/// The basic alignment for all data structures in the CFBs generated according
+/// to MS-OFFCRYPTO.
+const BASE_ALIGN: usize = 4;
+
+fn pad_to<const ALIGN: usize>(mut writer: impl Write, len: usize) {
+    if len % ALIGN != 0 {
+        writer.write_all(&[0; ALIGN][..(len.next_multiple_of(ALIGN) - len)]).unwrap();
+    }
+}
+
+/// A hole that the length of a substructure, including that length, should be
+/// back-patched into.
+///
+/// This type panics if dropped.
+struct LenBackpatchHole {
+    at: usize,
+}
+
+#[cfg(debug_assertions)]
+impl Drop for LenBackpatchHole {
+    fn drop(&mut self) {
+        panic!("Length never got patched into the buffer at the appropriate position.")
+    }
+}
+
+/// A wrapper type around the buffer that includes extra assertions regarding
+/// structure size and buffer alignment.
+struct BufferAlignAssertScope<'a> {
+    #[cfg(debug_assertions)]
+    buffer: Option<&'a mut Vec<u8>>,
+    #[cfg(not(debug_assertions))]
+    buffer: &'a mut Vec<u8>,
+    #[cfg(debug_assertions)]
+    name: &'static str,
+    #[cfg(debug_assertions)]
+    initial_len: usize,
+    #[cfg(debug_assertions)]
+    grow_by: usize,
+}
+
+impl<'a> BufferAlignAssertScope<'a> {
+    /// Assert alignment of the `buffer` for the `"beginning"` or `"end"` (in
+    /// `at`) for a structure with some `name`.
+    #[cfg(debug_assertions)]
+    fn assert(buffer: &[u8], name: &str, at: &str) {
+        assert_eq!(
+            buffer.len() % BASE_ALIGN,
+            0,
+            "The buffer should be aligned to {BASE_ALIGN} bytes at the {at} of {name}"
+        );
+    }
+
+    /// Assert buffer alignment and structure size at the end of the structure.
+    #[cfg(debug_assertions)]
+    fn assert_end(&self) {
+        assert!(
+            self.len() >= self.initial_len,
+            "Expected the buffer to have grown from {} at the end of {}, but it now has a size of \
+             {}",
+            self.initial_len,
+            self.name,
+            self.len(),
+        );
+        let actual_growth = self.len() - self.initial_len;
+        assert_eq!(
+            actual_growth, self.grow_by,
+            "Expected the buffer to have grown by {} at the end of {}, but it grew by \
+             {actual_growth}",
+            self.grow_by, self.name,
+        );
+        Self::assert(self, self.name, "end");
+    }
+
+    /// Create a new `BufferAlignAssertScope` with all debugging information.
+    #[cfg(debug_assertions)]
+    fn new_inner(name: &'static str, buffer: &'a mut Vec<u8>, grow_by: usize) -> Self {
+        Self::assert(buffer, name, "start");
+        let initial_len = buffer.len();
+        BufferAlignAssertScope {
+            buffer: Some(buffer),
+            name,
+            initial_len,
+            grow_by,
+        }
+    }
+
+    /// Create a new `BufferAlignAssertScope` *without* all debugging
+    /// information.
+    #[cfg(not(debug_assertions))]
+    fn new_inner(_: &'static str, buffer: &'a mut Vec<u8>, _: usize) -> Self {
+        BufferAlignAssertScope { buffer }
+    }
+
+    /// Create a new `BufferAlignAssertScope` for a structure with a given
+    /// length that should be appended to the buffer.
+    fn new(name: &'static str, buffer: &'a mut Vec<u8>, length: usize) -> Self {
+        buffer.reserve(length);
+        Self::new_inner(name, buffer, length)
+    }
+
+    /// Create a new `BufferAlignAssertScope` for a structure with a given
+    /// length that should replace all data within the buffer.
+    fn clear(name: &'static str, buffer: &'a mut Vec<u8>, length: usize) -> Self {
+        buffer.clear();
+        Self::new(name, buffer, length)
+    }
+
+    /// Pad to the base alignment.
+    fn pad(&mut self) {
+        let len = self.len();
+        pad_to::<BASE_ALIGN>(&mut **self, len);
+    }
+
+    /// Add a 4 byte length field (`u32`) that should be back-patched later.
+    fn length_field(&mut self) -> LenBackpatchHole {
+        let at = self.len();
+        self.extend(u32::to_le_bytes(0));
+        LenBackpatchHole { at }
+    }
+
+    /// Back-patch a hole with the 4 byte length (`u32`), including that hole.
+    fn back_patch(&mut self, hole: LenBackpatchHole) {
+        let len_as_le_bytes = u32::to_le_bytes(self[hole.at..].len().try_into().unwrap());
+        self[hole.at..(hole.at + size_of::<u32>())].copy_from_slice(&len_as_le_bytes);
+        mem::forget(hole);
+    }
+
+    /// Produce the inner bytes as a reference
+    #[cfg(debug_assertions)]
+    fn to_bytes(mut self) -> &'a [u8] {
+        self.assert_end();
+        let buffer = self.buffer.take().unwrap();
+        mem::forget(self);
+        buffer
+    }
+
+    /// Produce the inner bytes as a reference
+    #[cfg(not(debug_assertions))]
+    fn to_bytes(self) -> &'a [u8] {
+        self.buffer
+    }
+}
+
+impl ops::Deref for BufferAlignAssertScope<'_> {
+    type Target = Vec<u8>;
+
+    #[cfg(debug_assertions)]
+    fn deref(&self) -> &Vec<u8> {
+        self.buffer.as_ref().unwrap()
+    }
+
+    #[cfg(not(debug_assertions))]
+    fn deref(&self) -> &Vec<u8> {
+        self.buffer
+    }
+}
+
+impl ops::DerefMut for BufferAlignAssertScope<'_> {
+    #[cfg(debug_assertions)]
+    fn deref_mut(&mut self) -> &mut Vec<u8> {
+        self.buffer.as_mut().unwrap()
+    }
+
+    #[cfg(not(debug_assertions))]
+    fn deref_mut(&mut self) -> &mut Vec<u8> {
+        self.buffer
+    }
+}
+
+#[cfg(debug_assertions)]
+impl Drop for BufferAlignAssertScope<'_> {
+    fn drop(&mut self) {
+        self.assert_end();
+    }
+}
+
+/// Return the length in bytes of a `UNICODE-LP-P4`, as defined in 2.1.2.
+const fn unicode_lp_p4_len(data: &Utf16Str) -> usize {
+    size_of::<u32>() + (data.len() * 2).next_multiple_of(BASE_ALIGN)
+}
+
 /// Append a `UNICODE-LP-P4`, as defined in 2.1.2, to a buffer,
 fn write_unicode_lp_p4(buffer: &mut Vec<u8>, data: &Utf16Str) {
-    let length = data.len() * 2;
+    let data_length_in_bytes = data.len() * 2;
+    let struct_len = unicode_lp_p4_len(data);
+    let mut buffer = BufferAlignAssertScope::new("UNICODE-LP-P4", buffer, struct_len);
 
-    buffer.reserve(4 + length.next_multiple_of(4));
-
-    // Length:
-    buffer.extend(&u32::to_le_bytes(length.try_into().unwrap()));
+    // Data length in bytes:
+    buffer.extend(&u32::to_le_bytes(data_length_in_bytes.try_into().unwrap()));
 
     // Data:
     for i in data.code_units() {
@@ -52,50 +232,47 @@ fn write_unicode_lp_p4(buffer: &mut Vec<u8>, data: &Utf16Str) {
     }
 
     // Padding:
-    if length % 4 != 0 {
-        buffer.extend(&[0u8; 4][..(length.next_multiple_of(4) - length)]);
-    }
+    buffer.pad();
 }
+
+/// The length of a `Version`, as defined in 2.1.4.
+const VERSION_LEN: usize = size_of::<u16>() * 2;
 
 /// Append a `Version`, as defined in 2.1.4, to a buffer.
 fn write_version(buffer: &mut Vec<u8>, major: u16, minor: u16) {
-    buffer.reserve(4);
+    let mut buffer = BufferAlignAssertScope::new("Version", buffer, VERSION_LEN);
     buffer.extend(&u16::to_le_bytes(major));
     buffer.extend(&u16::to_le_bytes(minor));
-}
-
-fn len_backpatch(buffer: &mut [u8], index: usize, length_of: impl RangeBounds<usize>) {
-    let len = buffer[(
-        length_of.start_bound().cloned(),
-        length_of.end_bound().cloned(),
-    )]
-        .len();
-    buffer[index..(index + 4)].copy_from_slice(&u32::to_le_bytes(len.try_into().unwrap()));
 }
 
 /// Write a `DataSpaceVersionInfo`, as defined in 2.1.5, to a buffer, clearing
 /// any previous contents and returning a read-only slice to the resulting
 /// bytes.
 fn data_space_version_info(buffer: &mut Vec<u8>) -> &[u8] {
-    // type: DataSpaceVersionInfo
-    buffer.clear();
-    // FeatureIdentifier:
-    write_unicode_lp_p4(buffer, utf16str!("Microsoft.Container.DataSpaces"));
-    // ReaderVersion:
-    write_version(buffer, 1, 0);
-    // UpdaterVersion:
-    write_version(buffer, 1, 0);
-    // WriterVersion:
-    write_version(buffer, 1, 0);
+    let feature_identifier = utf16str!("Microsoft.Container.DataSpaces");
+    let struct_len = unicode_lp_p4_len(feature_identifier) + 3 * VERSION_LEN;
+    let mut buffer = BufferAlignAssertScope::clear("DataSpaceVersionInfo", buffer, struct_len);
 
-    buffer
+    // FeatureIdentifier:
+    write_unicode_lp_p4(&mut buffer, feature_identifier);
+    // ReaderVersion:
+    write_version(&mut buffer, 1, 0);
+    // UpdaterVersion:
+    write_version(&mut buffer, 1, 0);
+    // WriterVersion:
+    write_version(&mut buffer, 1, 0);
+
+    buffer.to_bytes()
 }
 
 /// Write a `DataSpaceMap`, as defined in 2.1.6, to a buffer, clearing any
 /// previous contents and returning a read-only slice to the resulting bytes.
 fn data_space_map(buffer: &mut Vec<u8>) -> &[u8] {
-    // type: DataSpaceMap
-    buffer.clear();
+    let component = utf16str!("EncryptedPackage");
+    let name = utf16str!("StrongEncryptionDataSpace");
+    let struct_len = 5 * size_of::<u32>() + unicode_lp_p4_len(component) + unicode_lp_p4_len(name);
+    let mut buffer = BufferAlignAssertScope::clear("DataSpaceMap", buffer, struct_len);
+
     // HeaderLength:
     buffer.extend(&u32::to_le_bytes(8));
     // EntryCount:
@@ -103,62 +280,69 @@ fn data_space_map(buffer: &mut Vec<u8>) -> &[u8] {
     // MapEntries:
     // a single entry of type: DataSpaceMapEntry
     // (MapEntries[0] as DataSpaceMapEntry).Length
-    let length_pos = buffer.len();
-    buffer.extend(&u32::to_le_bytes(0));
+    let length_hole = buffer.length_field();
     // MapEntries[0].ReferenceComponentCount
     buffer.extend(&u32::to_le_bytes(1));
     // MapEntries[0].ReferenceComponents[0].ReferenceComponentType
     buffer.extend(&u32::to_le_bytes(0));
     // MapEntries[0].ReferenceComponents[0].ReferenceComponent
-    write_unicode_lp_p4(buffer, utf16str!("EncryptedPackage"));
+    write_unicode_lp_p4(&mut buffer, component);
     // MapEntries[0].DataSpaceName
-    write_unicode_lp_p4(buffer, utf16str!("StrongEncryptionDataSpace"));
+    write_unicode_lp_p4(&mut buffer, name);
 
-    len_backpatch(buffer, length_pos, length_pos..);
+    buffer.back_patch(length_hole);
 
-    buffer
+    buffer.to_bytes()
 }
 
 /// Write a `DataSpaceDefinition`, as defined in 2.1.7, to a buffer, clearing
 /// any previous contents and returning a read-only slice to the resulting
 /// bytes.
 fn data_space_definition(buffer: &mut Vec<u8>) -> &[u8] {
-    // type: DataSpaceDefinition
-    buffer.clear();
+    let name = utf16str!("StrongEncryptionTransform");
+    let struct_len = 2 * size_of::<u32>() + unicode_lp_p4_len(name);
+    let mut buffer = BufferAlignAssertScope::clear("DataSpaceDefinition", buffer, struct_len);
+
     // HeaderLength
     buffer.extend(&u32::to_le_bytes(8));
     // TransformReferenceCount
     buffer.extend(&u32::to_le_bytes(1));
     // TransformReferences[0]
-    write_unicode_lp_p4(buffer, utf16str!("StrongEncryptionTransform"));
+    write_unicode_lp_p4(&mut buffer, name);
 
-    buffer
+    buffer.to_bytes()
 }
 
 /// Write a `TransformInfoHeader`, as defined in 2.1.8, and then an
 /// `EncryptionTransformInfo`, as defined in 2.1.9, to a buffer, clearing any
 /// previous contents and returning a read-only slice to the resulting bytes.
 fn transform_info(buffer: &mut Vec<u8>) -> &[u8] {
-    buffer.clear();
+    let id = utf16str!("{FF9A3F03-56EF-4613-BDD5-5A41C1D07246}");
+    let name = utf16str!("Microsoft.Container.EncryptionTransform");
+    let struct_len = 2 * size_of::<u32>()
+        + unicode_lp_p4_len(id)
+        + unicode_lp_p4_len(name)
+        + 3 * VERSION_LEN
+        + 4 * size_of::<u32>();
+    let mut buffer = BufferAlignAssertScope::clear("TransformInfo", buffer, struct_len);
 
     // type: TransformInfoHeader
     // TransformLength
-    let transform_length_pos = buffer.len();
-    buffer.extend(&u32::to_le_bytes(0));
+    let transform_length_hole = buffer.length_field();
     // TransformType
     buffer.extend(&u32::to_le_bytes(1));
     // TransformID
-    write_unicode_lp_p4(buffer, utf16str!("{FF9A3F03-56EF-4613-BDD5-5A41C1D07246}"));
+    write_unicode_lp_p4(&mut buffer, id);
+    buffer.back_patch(transform_length_hole);
 
-    len_backpatch(buffer, transform_length_pos, ..);
     // TransformName
-    write_unicode_lp_p4(buffer, utf16str!("Microsoft.Container.EncryptionTransform"));
+    write_unicode_lp_p4(&mut buffer, name);
     // ReaderVersion
-    write_version(buffer, 1, 0);
+    write_version(&mut buffer, 1, 0);
     // UpdaterVersion
-    write_version(buffer, 1, 0);
+    write_version(&mut buffer, 1, 0);
     // WriterVersion
-    write_version(buffer, 1, 0);
+    write_version(&mut buffer, 1, 0);
 
     // type: EncryptionTransformInfo
     // EncryptionName (null)
@@ -172,7 +356,7 @@ fn transform_info(buffer: &mut Vec<u8>) -> &[u8] {
     // Reserved
     buffer.extend(&u32::to_le_bytes(4));
 
-    buffer
+    buffer.to_bytes()
 }
 
 /// Produce the SHA512 hash of the concatenation of any number of byte slices.
@@ -243,6 +427,8 @@ impl Password for widestring::U16String {
 /// Panics if `iv` is less than 16 bytes, or if `data` isn't a multiple of 16
 /// bytes (since the block size of AES256 is 16 bytes).
 fn encrypt_direct<'a>(data: &'a mut [u8], key: [u8; 32], iv: &[u8]) -> &'a [u8] {
+    assert_eq!(data.len() % 16, 0);
+
     let mut iv_array = [0; 16];
     iv_array.copy_from_slice(&iv[..16]);
 
@@ -457,11 +643,7 @@ impl<F: Read + Write + Seek> Ecma376AgileWriter<F> {
         let mut cfb = self.cfb.take().unwrap();
 
         let len: u64 = self.encrypted_package.len() - 8;
-
-        if len % 16 != 0 {
-            let padding = usize::try_from(len.next_multiple_of(16) - len).unwrap();
-            self.encrypted_package.write_all(&[0u8; 16][..padding])?;
-        }
+        pad_to::<16>(&mut self.encrypted_package, usize::try_from(len).unwrap());
 
         let mut hmac = HmacSha512::new_from_slice(&self.hmac_key).unwrap();
 
@@ -602,6 +784,62 @@ mod test {
     use std::io::Cursor;
 
     use super::*;
+
+    #[test]
+    fn buffer_align_assert_scope_okay() {
+        BufferAlignAssertScope::new("test", &mut b"okay".to_vec(), 0);
+        let mut buffer = b"okay".to_vec();
+        let mut buffer = BufferAlignAssertScope::new("test", &mut buffer, 4);
+        buffer.extend(b"more");
+    }
+
+    #[test]
+    #[should_panic(expected = "aligned to 4 bytes at the start of test")]
+    fn buffer_align_assert_scope_unaligned_start() {
+        BufferAlignAssertScope::new("test", &mut b"odd".to_vec(), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "aligned to 4 bytes at the end of test")]
+    fn buffer_align_assert_scope_unaligned_end() {
+        let mut buffer = b"even".to_vec();
+        let mut buffer = BufferAlignAssertScope::new("test", &mut buffer, 3);
+        buffer.extend(b"odd");
+    }
+
+    #[test]
+    #[should_panic(expected = "grown by 8 at the end of test, but it grew by 4")]
+    fn buffer_align_assert_scope_wrong_length() {
+        let mut buffer = b"okay".to_vec();
+        let mut buffer = BufferAlignAssertScope::new("test", &mut buffer, 8);
+        buffer.extend(b"more");
+    }
+
+    #[test]
+    #[should_panic(expected = "grown from 4 at the end of test, but it now has a size of 0")]
+    fn buffer_align_assert_scope_shrunk() {
+        let mut buffer = b"okay".to_vec();
+        let mut buffer = BufferAlignAssertScope::new("test", &mut buffer, 0);
+        buffer.clear();
+    }
+
+    #[test]
+    fn len_backpatch() {
+        let mut buffer = b"prefix  ".to_vec();
+        let mut buffer = BufferAlignAssertScope::new("test", &mut buffer, 24);
+        buffer.extend(b"start   ");
+        let len_hole = buffer.length_field();
+        buffer.extend(b"end ");
+        buffer.back_patch(len_hole);
+        buffer.extend(b"suffix  ");
+        assert_eq!(*buffer, b"prefix  start   \x08\0\0\0end suffix  ");
+    }
+
+    #[test]
+    #[should_panic(expected = "never got patched into the buffer")]
+    fn len_backpatch_dropped() {
+        BufferAlignAssertScope::new("test", &mut b"even".to_vec(), 4).length_field();
+    }
 
     #[test]
     fn write_unicode_lp_p4_len() {
