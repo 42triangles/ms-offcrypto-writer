@@ -1,7 +1,17 @@
 //! This crate allows encrypting ECMA376/OOXML (so newer MS-Office files such as
-//! XLSX) using the agile encryption method as described in [MS-OFFCRYPTO](https://msopenspecs.azureedge.net/files/MS-OFFCRYPTO/[MS-OFFCRYPTO].pdf).
+//! XLSX) using the agile encryption method as described in
+//! [MS-OFFCRYPTO](https://msopenspecs.azureedge.net/files/MS-OFFCRYPTO/[MS-OFFCRYPTO].pdf).
 //!
-//! See [`Ecma376AgileWriter`].
+//! See the [`Ecma376AgileWriter`] type for the actual API of this crate.
+//!
+//! # Implementation details
+//! All functions writing structures expect the buffer to be logically aligned
+//! to (= the length of the buffer is a multiple of) four bytes, and leave the
+//! buffer aligned to four bytes upon returning.
+//!
+//! A such, they may panic if and only if
+//! 1. They are passed an improperly aligned buffer, or
+//! 2. Reallocation of the buffer upon growing fails.
 
 use std::{
     fmt,
@@ -20,9 +30,14 @@ use widestring::{utf16str, Utf16Str};
 
 type HmacSha512 = hmac::Hmac<Sha512>;
 
+/// The number of iterations of hashing the password (see 2.3.4.13).
 const SPIN_COUNT: u32 = 100_000;
+
+/// The size of the header in the CFB stream of the actual encrypted data (see
+/// 2.3.4.4).
 const ENCRYPTED_PACKAGE_HEADER_SIZE: u64 = size_of::<u64>() as u64;
 
+/// Append a `UNICODE-LP-P4`, as defined in 2.1.2, to a buffer,
 fn write_unicode_lp_p4(buffer: &mut Vec<u8>, data: &Utf16Str) {
     let length = data.len() * 2;
 
@@ -42,6 +57,7 @@ fn write_unicode_lp_p4(buffer: &mut Vec<u8>, data: &Utf16Str) {
     }
 }
 
+/// Append a `Version`, as defined in 2.1.4, to a buffer.
 fn write_version(buffer: &mut Vec<u8>, major: u16, minor: u16) {
     buffer.reserve(4);
     buffer.extend(&u16::to_le_bytes(major));
@@ -57,6 +73,9 @@ fn len_backpatch(buffer: &mut [u8], index: usize, length_of: impl RangeBounds<us
     buffer[index..(index + 4)].copy_from_slice(&u32::to_le_bytes(len.try_into().unwrap()));
 }
 
+/// Write a `DataSpaceVersionInfo`, as defined in 2.1.5, to a buffer, clearing
+/// any previous contents and returning a read-only slice to the resulting
+/// bytes.
 fn data_space_version_info(buffer: &mut Vec<u8>) -> &[u8] {
     // type: DataSpaceVersionInfo
     buffer.clear();
@@ -72,6 +91,8 @@ fn data_space_version_info(buffer: &mut Vec<u8>) -> &[u8] {
     buffer
 }
 
+/// Write a `DataSpaceMap`, as defined in 2.1.6, to a buffer, clearing any
+/// previous contents and returning a read-only slice to the resulting bytes.
 fn data_space_map(buffer: &mut Vec<u8>) -> &[u8] {
     // type: DataSpaceMap
     buffer.clear();
@@ -98,6 +119,9 @@ fn data_space_map(buffer: &mut Vec<u8>) -> &[u8] {
     buffer
 }
 
+/// Write a `DataSpaceDefinition`, as defined in 2.1.7, to a buffer, clearing
+/// any previous contents and returning a read-only slice to the resulting
+/// bytes.
 fn data_space_definition(buffer: &mut Vec<u8>) -> &[u8] {
     // type: DataSpaceDefinition
     buffer.clear();
@@ -111,6 +135,9 @@ fn data_space_definition(buffer: &mut Vec<u8>) -> &[u8] {
     buffer
 }
 
+/// Write a `TransformInfoHeader`, as defined in 2.1.8, and then an
+/// `EncryptionTransformInfo`, as defined in 2.1.9, to a buffer, clearing any
+/// previous contents and returning a read-only slice to the resulting bytes.
 fn transform_info(buffer: &mut Vec<u8>) -> &[u8] {
     buffer.clear();
 
@@ -148,6 +175,7 @@ fn transform_info(buffer: &mut Vec<u8>) -> &[u8] {
     buffer
 }
 
+/// Produce the SHA512 hash of the concatenation of any number of byte slices.
 #[allow(
     single_use_lifetimes,
     reason = "See the `anonymous_lifetime_in_impl_trait` feature"
@@ -162,7 +190,7 @@ fn sha512<'a>(x: impl IntoIterator<Item = &'a [u8]>) -> [u8; 64] {
 /// types that can directly return those codepoints without reencoding are
 /// preferable.
 pub trait Password {
-    /// Encode the password as UTF16
+    /// Encode the password as UTF16.
     fn encode_utf16(&self) -> impl IntoIterator<Item = u16> + '_;
 }
 
@@ -208,6 +236,12 @@ impl Password for widestring::U16String {
     }
 }
 
+/// Encrypt data with the first 16 bytes of an initialisation vector using
+/// AES256 CBC.
+///
+/// # Panics
+/// Panics if `iv` is less than 16 bytes, or if `data` isn't a multiple of 16
+/// bytes (since the block size of AES256 is 16 bytes).
 fn encrypt_direct<'a>(data: &'a mut [u8], key: [u8; 32], iv: &[u8]) -> &'a [u8] {
     let mut iv_array = [0; 16];
     iv_array.copy_from_slice(&iv[..16]);
@@ -219,6 +253,9 @@ fn encrypt_direct<'a>(data: &'a mut [u8], key: [u8; 32], iv: &[u8]) -> &'a [u8] 
     data
 }
 
+/// Encrypt data with a key, salt & block key. This is used for the HMAC key &
+/// value, as well as the actual encrypted blocks of the main encrypted data
+/// stream.
 fn encrypt_with_block_key<'a>(
     data: &'a mut [u8],
     key: [u8; 32],
@@ -239,6 +276,11 @@ fn encrypt_with_block_key<'a>(
 ///    unencrypted), and
 /// 2. If there are IO errors on encrypting, the `Drop` implementation on this
 ///    type will panic.
+///
+/// Additionally, ***THIS TYPE SHOULD NOT BE USED WITH A BACKING THAT ISN'T
+/// TRUSTED***, such as a (in most circumstances) a physical file, since
+/// otherwise unencrypted data could be leaked for intermediate writes, or in
+/// the case of an IO error, the final resulting file.
 pub struct Ecma376AgileWriter<F: Read + Write + Seek> {
     cfb: Option<CompoundFile<F>>,
     encrypted_package: Stream<F>,
@@ -344,6 +386,9 @@ impl<F: Read + Write + Seek> Ecma376AgileWriter<F> {
         })
     }
 
+    /// Write the `EncryptionInfo` for Agile Encryption, as defined in 2.3.4.10,
+    /// to the provided stream using the HMAC value that resulted from
+    /// encrypting the full data stream.
     fn encryption_info(&self, stream: &mut Stream<F>, hmac: HmacSha512) -> io::Result<()> {
         use base64::{
             display::Base64Display,
@@ -407,6 +452,7 @@ impl<F: Read + Write + Seek> Ecma376AgileWriter<F> {
         )
     }
 
+    /// Encrypt the encrypted data stream & write the encryption info.
     fn encrypt_impl(&mut self) -> io::Result<F> {
         let mut cfb = self.cfb.take().unwrap();
 
