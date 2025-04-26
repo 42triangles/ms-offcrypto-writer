@@ -42,7 +42,9 @@ const BASE_ALIGN: usize = 4;
 
 fn pad_to<const ALIGN: usize>(mut writer: impl Write, len: usize) {
     if len % ALIGN != 0 {
-        writer.write_all(&[0; ALIGN][..(len.next_multiple_of(ALIGN) - len)]).unwrap();
+        writer
+            .write_all(&[0; ALIGN][..(len.next_multiple_of(ALIGN) - len)])
+            .unwrap();
     }
 }
 
