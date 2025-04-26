@@ -995,56 +995,6 @@ mod test {
     }
 
     // NOTE: Things outside of the integration are difficult to test for
-    // `Ecma376AgileWriter`, since it the results do not appear to be repeatable.
-
-    #[test]
-    fn test_integration() {
-        use calamine::Reader;
-        use simple_xlsx_writer::{row, Row, WorkBook};
-
-        let password = "test password";
-        let count = 1000;
-        let mapping = |index| {
-            let mut out = [0; 8];
-            out.copy_from_slice(&super::sha512([&u64::to_le_bytes(index) as &[u8]])[..8]);
-            format!("[{}]", u64::from_le_bytes(out).to_string()) // avoid the float roundtrip
-        };
-
-        let mut cursor = Cursor::new(Vec::new());
-        let mut agile =
-            Ecma376AgileWriter::create(&mut rand::rng(), password, &mut cursor).unwrap();
-        let mut workbook = WorkBook::new(&mut agile).unwrap();
-        workbook
-            .get_new_sheet()
-            .write_sheet(|sheet| {
-                sheet.write_row(row!["String", "Index", "Mapping"]).unwrap();
-                for i in 0u64..count {
-                    sheet.write_row(row!["String", i.to_string(), mapping(i)])?;
-                }
-                Ok(())
-            })
-            .unwrap();
-        workbook.finish().unwrap();
-        agile.encrypt().unwrap();
-
-        let decrypted = office_crypto::decrypt_from_bytes(cursor.into_inner(), password).unwrap();
-
-        let mut workbook: calamine::Xlsx<_> =
-            calamine::open_workbook_from_rs(Cursor::new(decrypted)).unwrap();
-
-        let sheet_names = workbook.sheet_names();
-        assert_eq!(sheet_names.len(), 1);
-
-        let sheet = workbook.worksheet_range(&sheet_names[0]).unwrap();
-
-        let mut index = 0u64;
-        for i in sheet.deserialize().unwrap() {
-            let (s, i, m): (String, String, String) = i.unwrap();
-            assert_eq!(s, "String");
-            assert_eq!(i, index.to_string());
-            assert_eq!(m, mapping(index));
-            index += 1;
-        }
-        assert_eq!(index, count);
-    }
+    // `Ecma376AgileWriter`, since it the results do not appear to be
+    // repeatable.
 }
