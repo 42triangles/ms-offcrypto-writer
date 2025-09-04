@@ -1,6 +1,6 @@
 [package]
 name = "ms-offcrypto-writer"
-version = "1.0.4"
+version = "1.0.5"
 description = "Encrypting ECMA376/OOXML files with agile encryption as described in MS-OFFCRYPTO"
 repository = "https://github.com/42triangles/ms-offcrypto-writer"
 readme = "README.md"
