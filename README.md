@@ -4,6 +4,8 @@ This crate allows encrypting ECMA376/OOXML (so newer MS-Office files such as XLS
 ## How to use
 Use the `Ecma376AgileWriter` wrapper around a `File` or `Cursor` (or whatever writer you're using) for other crates such as [`simple-xlsx-writer`](https://crates.io/crates/simple-xlsx-writer).
 
+It does, as of version 1.0.6, make sure that no unencrypted data ever hits the underlying writer, so this can be used even for "untrusted" writers (such as a physical file).
+
 ## If you find security flaws
 If you find any security flaws beyond the lack of zeroing out data structures, please send me an email at 42triangles@tutanota.com. I will *try* to answer within two days.
 
@@ -21,7 +23,7 @@ The used values are:
 
 ## Contributing
 PRs are open; this is specifically aims to be a very simple and easy to audit implementation.
-A more complete implementation that includes reading as well, plus a lot more features & configurability, is in the works though - if you're interested in working on that instead, please send me an email at 42triangles@tutanota.com!
+A more complete implementation that includes reading as well, plus a lot more features & configurability, is in the works though (though most of my time has gone elsewhere this year for now) - if you're interested in working on that instead, please send me an email at 42triangles@tutanota.com!
 
 ### The `src/encryption_info.xml` file
 If you need to edit this, you may want to do it in a binary editor.
@@ -32,7 +34,6 @@ It includes both binary data in the beginning, uses CRLF and should NOT include 
 * Make the XML templating saner. Mostly such that the file is fully UTF8 & trailing newlines (such as the ones added by vim) aren't an issue.
 * Add examples & tests
 * *Maybe* byte equivalent files including the CFB container file (though that will require a reimplementation for CFBs).
-* *Maybe* on-the-fly encryption that never actually commits unencrypted data to the underlying writer. While I'm very interested in this, there's some design decisions to hash out & benchmarks to be done.
 * *Maybe* optimising it for speed. It should be plenty fast, and either the `cfb` crate or the `write!` usage directly into the stream is a likely culprit if things aren't, but nothing has been verified or even tested regarding performance.
 * *Maybe* implement zeroing of data structures.
 
