@@ -1,8 +1,9 @@
+use std::io::Cursor;
+
 use calamine::Reader;
 use ms_offcrypto_writer::Ecma376AgileWriter;
-use simple_xlsx_writer::{row, Row, WorkBook};
 use sha2::{Digest, Sha512};
-use std::io::Cursor;
+use simple_xlsx_writer::{row, Row, WorkBook};
 
 const PASSWORD: &str = "test password";
 const ROW_COUNT: u64 = 1000;
@@ -10,10 +11,12 @@ const ROW_COUNT: u64 = 1000;
 // Column with higher entropy:
 fn mapped_int(index: u64) -> String {
     let mut out = [0; 8];
-    let digest: [u8; 64] = Sha512::new_with_prefix(&u64::to_le_bytes(index)).finalize().into();
+    let digest: [u8; 64] = Sha512::new_with_prefix(u64::to_le_bytes(index))
+        .finalize()
+        .into();
     out.copy_from_slice(&digest[..8]);
     // Avoid the float roundtrip:
-    format!("[{}]", u64::from_le_bytes(out).to_string())
+    format!("[{}]", u64::from_le_bytes(out))
 }
 
 #[test]
@@ -34,7 +37,7 @@ fn integration() {
         })
         .unwrap();
     workbook.finish().unwrap();
-    agile.encrypt().unwrap();
+    agile.finalize().unwrap();
 
     let decrypted = office_crypto::decrypt_from_bytes(cursor.into_inner(), PASSWORD).unwrap();
 
