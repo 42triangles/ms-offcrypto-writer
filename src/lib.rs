@@ -492,6 +492,7 @@ pub struct Ecma376AgileWriter<F: Read + Write + Seek> {
     verifier_h_n: [u8; 64],
     hmac_key: [u8; 64],
     verifier_hash_input: [u8; 16],
+    dirty: bool,
 }
 
 impl<F: Read + Write + Seek> Ecma376AgileWriter<F> {
@@ -590,6 +591,7 @@ impl<F: Read + Write + Seek> Ecma376AgileWriter<F> {
             verifier_h_n,
             hmac_key,
             verifier_hash_input,
+            dirty: true,
         })
     }
 
@@ -690,6 +692,7 @@ impl<F: Read + Write + Seek> Read for Ecma376AgileWriter<F> {
 
 impl<F: Read + Write + Seek> Write for Ecma376AgileWriter<F> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.dirty = true;
         self.encrypted_package.write(buf)
     }
 
@@ -697,6 +700,14 @@ impl<F: Read + Write + Seek> Write for Ecma376AgileWriter<F> {
     // flush the encrypted package as well as the cfb file.
     fn flush(&mut self) -> io::Result<()> {
         let mut cfb = self.cfb.take().unwrap();
+
+        if !self.dirty {
+            // Flushing in that case is unnecessary.
+            // Flush the `cfb` just to be sure that flushes arrive in the underlying writer if that
+            // is - for whatever reason - depended upon
+            cfb.flush()?;
+            return Ok(());
+        }
 
         let len: u64 = self.encrypted_package.size();
         pad_to::<16>(&mut self.encrypted_package, usize::try_from(len).unwrap());
@@ -732,6 +743,8 @@ impl<F: Read + Write + Seek> Write for Ecma376AgileWriter<F> {
 
         // Put the `cfb` back
         self.cfb = Some(cfb);
+
+        self.dirty = false;
 
         Ok(())
     }
