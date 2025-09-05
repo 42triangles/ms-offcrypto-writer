@@ -39,6 +39,8 @@ fn integration() {
     workbook.finish().unwrap();
     agile.finalize().unwrap();
 
+    // NOTE: This does not check the hmac.
+    // If this test passes, but the file can't be opened, the hmac calculation is likely broken.
     let decrypted = office_crypto::decrypt_from_bytes(cursor.into_inner(), PASSWORD).unwrap();
 
     let mut workbook: calamine::Xlsx<_> =

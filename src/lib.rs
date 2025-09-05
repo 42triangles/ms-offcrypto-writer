@@ -702,26 +702,27 @@ impl<F: Read + Write + Seek> Write for Ecma376AgileWriter<F> {
         pad_to::<16>(&mut self.encrypted_package, usize::try_from(len).unwrap());
 
         let mut hmac = HmacSha512::new_from_slice(&self.hmac_key).unwrap();
-
+        // `write_inner` flushes the inner writer first:
         self.encrypted_package.write_inner(|writer| {
             writer.seek(SeekFrom::Start(0))?;
+
             writer.write_all(&u64::to_le_bytes(len))?;
             hmac.update(&u64::to_le_bytes(len));
-            Ok(())
-        })?;
 
-        self.encrypted_package.seek(SeekFrom::Start(0))?;
-        let mut buffer = [0; 1024];
-        loop {
-            let length_read = self.encrypted_package.read(&mut buffer)?;
-            if length_read == 0 {
-                break;
+            let mut buffer = [0; 1024];
+            loop {
+                let length_read = writer.read(&mut buffer)?;
+                if length_read == 0 {
+                    break;
+                }
+
+                hmac.update(&buffer[..length_read]);
             }
 
-            hmac.update(&buffer[..length_read]);
-        }
+            writer.flush()?;
 
-        self.encrypted_package.flush()?;
+            Ok(())
+        })?;
 
         let mut encryption_info_stream = cfb.create_new_stream("/EncryptionInfo")?;
         self.encryption_info(&mut encryption_info_stream, hmac)?;

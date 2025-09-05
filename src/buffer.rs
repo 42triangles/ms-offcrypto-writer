@@ -285,10 +285,13 @@ impl<const SEEK_OFFSET: u64, W: Read + Write + Seek> EncryptingBufferingCursor<S
         &mut self,
         f: impl FnOnce(&mut W) -> io::Result<R>,
     ) -> io::Result<R> {
+        self.flush()?;
+
         let out = f(&mut self.writer);
         let seek = self.seek(SeekFrom::Start(self.pos_size.position));
         let out = out?;
         seek?;
+
         Ok(out)
     }
 
