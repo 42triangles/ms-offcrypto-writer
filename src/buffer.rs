@@ -335,6 +335,8 @@ where
             SEEK_OFFSET,
         )?;
 
+        self.writer.flush()?;
+
         Ok(())
     }
 }
