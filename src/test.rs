@@ -251,17 +251,19 @@ fn big_sheet() {
     .unwrap();
 
     // Write three chunks
-    for _ in 0..3u8 {
-        static ZERO_CHUNK: [u8; CHUNK_SIZE] = [0u8; _];
-
-        writer.write_all(&ZERO_CHUNK).unwrap();
+    for idx in 0..3u8 {
+        let chunk = [idx; CHUNK_SIZE];
+        writer.write_all(&chunk).unwrap();
     }
 
     // Go back to first chunk
     writer.seek(SeekFrom::Start(0)).unwrap();
-    let mut buffer = [0; 256];
-    writer.read_exact(&mut buffer).unwrap();
-    assert_eq!(buffer, [0; 256]);
+
+    for idx in 0..3u8 {
+        let mut buffer = [0; CHUNK_SIZE];
+        writer.read_exact(&mut buffer).unwrap();
+        assert_eq!(buffer[..256], [idx; 256]);
+    }
 }
 
 // NOTE: Things outside of the integration are difficult to test for
